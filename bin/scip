@@ -1,0 +1,147 @@
+#!/bin/sh
+
+NAME=scip
+VERSION=0.1.0
+
+SCIP="$(
+  BIN="$0"
+  while true; do
+    cd "$(dirname "$BIN")"
+    BIN="$(basename "$BIN")"
+    if [ -L "$BIN" ]; then
+      BIN="$(readlink "$BIN")"
+    else
+      break
+    fi
+  done
+  printf %s "$(pwd)/$BIN"
+)"
+SCIP_ROOT="$(cd "$(dirname "$SCIP")/.."&&pwd)"
+SCIP_SCOPE=$NAME
+SCIP_SIDE=client
+SCIP_LIB="$SCIP_ROOT/lib/scip"
+
+. "$SCIP_LIB/common.sh"
+
+print_help() {
+  cat<<__HELP__>&2
+$NAME
+  ssh client ip address utility
+
+usage:
+  $NAME show [ssh options]...
+  $NAME write <hostname> [ssh options]...
+  $NAME read <hostname> [ssh options]...
+  $NAME log [ssh options]...
+  $NAME help
+  $NAME version
+
+commands:
+  show              print ssh client ip address
+  write <hostname>  write ssh client ip address to ssh server cache
+                    if <hostname> is '-', find the system's host name
+  read  <hostname>  read ip address from ssh server cache
+                    if <hostname> is '-', find the system's host name
+  log               if arguments are given, try to print server log
+                    otherwise, print client log
+  help              print help message
+  version           print version info
+
+options:
+  SCIP_LOG_LEVEL    debug, info, warn, error, fatal or none (default: info)
+  SCIP_PRINT_LEVEL  debug, info, warn, error, fatal or none (default: info)
+__HELP__
+}
+
+print_version() {
+  println "$NAME v$VERSION">&2
+}
+
+init_hostname() {
+  case "$1" in
+    ''|-)
+      if [ -n "$SCIP_HOSTNAME" ]; then
+        return
+      fi
+      if [ -n "$HOSTNAME" ]; then
+        SCIP_HOSTNAME="$HOSTNAME"
+        return
+      fi
+      command -v hostname >/dev/null 2>&1 \
+        && SCIP_HOSTNAME="$(hostname 2>/dev/null)"
+      if [ -z "$SCIP_HOSTNAME" ]; then
+        SCIP_HOSTNAME=unknown
+      fi
+      return
+      ;;
+  esac
+  SCIP_HOSTNAME="$1"
+}
+
+init_server_script() {
+  SCIP_SERVER_SCRIPT="$(cat -<<__SERVER_SCRIPT__
+SCIP_SCOPE=scip-$1
+SCIP_SIDE=server
+SCIP_LOG_LEVEL=$SCIP_LOG_LEVEL
+SCIP_PRINT_LEVEL=$SCIP_PRINT_LEVEL
+$(cat "$SCIP_LIB/common.sh")
+init_log_dir
+$(cat "$SCIP_LIB/$1.sh")
+__SERVER_SCRIPT__
+  )$LF"
+}
+
+check_ssh_args() {
+  if [ $# -eq 0 ]; then
+    fatal "ssh arguments must not be empty"
+  fi
+}
+
+call_command() {
+  init_log_dir
+  init_server_script "$1"
+  shift 2
+  check_ssh_args "$@"
+  ssh "$@" "$SCIP_SERVER_SCRIPT"
+}
+
+call_command_with_host() {
+  init_log_dir
+  init_hostname "$3"
+  init_server_script "$1"
+  shift 3
+  check_ssh_args "$@"
+  echo "$SCIP_HOSTNAME" | ssh "$@" "$SCIP_SERVER_SCRIPT"
+}
+
+case "$1" in
+  show|s)
+    call_command show "$@" || fatal "failed to find client ip address"
+    ;;
+  write|w)
+    call_command_with_host write "$@" || fatal "failed to write client ip address"
+    ;;
+  read|r)
+    call_command_with_host read "$@" || fatal "failed to read ip address"
+    ;;
+  log|l)
+    if [ -n "$2" ]; then
+      call_command log "$@" || fatal "failed to print server log"
+    else
+      . "$SCIP_LIB/log.sh" || fatal "failed to print client log"
+    fi
+    ;;
+  help|h|--help|-h)
+    print_help
+    exit 0
+    ;;
+  version|v|--version|-v)
+    print_version
+    exit 0
+    ;;
+  *)
+    println "illegal arguments: $*">&2
+    print_help
+    exit 1
+    ;;
+esac
